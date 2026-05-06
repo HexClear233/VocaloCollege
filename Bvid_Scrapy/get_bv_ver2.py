@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 get_bv.py —— 爬取B站用户在特定时间段内发布视频的 BV 号
 
@@ -40,7 +38,6 @@ except ImportError:
 # 文件路径（可与脚本同目录，也可自定义）
 UIDLIST_FILE = "uidlist_20260430.txt"
 OUTPUT_FILE = "bv_result.txt"
-FAIL_OUTPUT_FILE = 'fail_uid.txt'
 
 # API 分页大小（B站支持最大 50）
 PAGE_SIZE = 50
@@ -52,7 +49,7 @@ REQUEST_INTERVAL = 0.3
 MAX_RETRIES = 3
 
 # 重试等待基础时间（秒）
-RETRY_DELAY = 2
+RETRY_DELAY = 3
 
 # WBI 签名用的混淆字符表（来自 B站前端源码）
 # 参考: https://github.com/SocialSisterYi/bilibili-API-collect
@@ -66,6 +63,19 @@ WBI_MIXIN_KEY_ENC_TAB = [
 # 时区设置为东八区（北京时间）
 TZ_SHANGHAI = timezone(timedelta(hours=8))
 
+DEFAULT_START_TIME = '2026-03-01'
+DEFAULT_START_TIME = '2026-07-01'
+DEFAULT_BVID_PATH = './bvid_202607.txt'
+DEFAULT_FAIL_UID_PATH = './uid_202607_fail.txt'
+DEFAULT_READ_UID_PATH = './read_uidlist.txt'
+
+# 从config.json读取SESSDATA
+try:    
+    with open("config.json", "r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+        SESSDATA = config.get("SESSDATA", "")
+except FileNotFoundError:
+    SESSDATA = ""
 
 # ============================================================
 # 请求头 & Cookie
@@ -110,9 +120,10 @@ def get_wbi_keys(sessdata: str) -> tuple:
         if data.get("code") not in (0, -101):
             print(f"  [警告] 获取 WBI keys 失败: code={data.get('code')}, message={data.get('message', '未知错误')}")
             return None, None
-        wbi_img = data.get("data", {}).get("wbi_img", {})
-        img_url = wbi_img.get("img_url", "")
-        sub_url = wbi_img.get("sub_url", "")
+        # wbi_img = data.get("data", {}).get("wbi_img", {})
+        wbi_img = data["data"]["wbi_img"]
+        img_url = wbi_img["img_url"]
+        sub_url = wbi_img["sub_url"]
         if not img_url or not sub_url:
             print("  [警告] WBI keys URL 为空")
             return None, None
@@ -169,7 +180,7 @@ def request_with_retry(
             # HTTP 412 风控拦截
             if resp.status_code == 412:
                 if attempt < max_retries:
-                    wait = RETRY_DELAY * attempt + random.uniform(2, 5)
+                    wait = RETRY_DELAY * attempt + random.uniform(1, 3)
                     print(f"    [412风控] 等待 {wait:.1f}s 后重试 ({attempt}/{max_retries})...")
                     time.sleep(wait)
                     continue
@@ -294,9 +305,12 @@ def fetch_user_videos(
 
         result = request_with_retry(api_url, params, headers)
         if result is None:
-            print(f"    UID={uid} 第 {page} 页获取失败，停止翻页")
-            with open(FAIL_OUTPUT_FILE, 'a') as ff:
-                ff.write(uid+'\n')
+            print(f"    \033[1;31mUID={uid} 第 {page} 页获取失败，停止翻页\033[0m")
+
+            # 失败UID保存
+            with open(DEFAULT_FAIL_UID_PATH, 'a') as ff:
+                ff.write(uid + '\n')
+            
             break
 
         data = result.get("data", {})
@@ -321,7 +335,7 @@ def fetch_user_videos(
                 bvids.append(bvid)
                 pub_time = datetime.fromtimestamp(created, tz=TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
                 total_fetched += 1
-                print(f"    + {bvid} | {pub_time} | {title} | {author}")
+                print(f"    \033[0;32m+ {bvid} | {pub_time} | {title} | {author}\033[0m")
 
         # 检查是否还有下一页
         page_info = data.get("page", {})
@@ -400,7 +414,7 @@ def main():
         help="截止日期，格式 YYYY-MM-DD（包含该天）",
     )
     parser.add_argument(
-        "--cookie", type=str, default="52017cdf%2C1781147737%2C36968%2Ac1CjCfd11pZuw6voUeWUINUfhjozVWDHNrtgRl1GdJ-N9gPx3UeOBw0L3ziqx9blVGgS0SVjdKOG1WeHJSdlkzMGplWnJGam50czZ1ZXdlcjk0VVA1MW5VSk9VWHdJdVZKbXd5UThudGR3eHdNMHVfNlRzMXZpNU5xc1Z5VkJ2ZFp3LWhNZ1BMTlBRIIEC",
+        "--cookie", type=str, default=SESSDATA,
         help="B站 SESSDATA 值（从浏览器 Cookie 中获取），可避免风控",
     )
     parser.add_argument(
@@ -446,6 +460,8 @@ def main():
 
     # 读取 UID 列表
     uids = load_uids(args.uid_file)
+    read_uids = load_uids(DEFAULT_READ_UID_PATH)
+
     if not uids:
         print("错误: UID 列表为空，请检查文件内容")
         sys.exit(1)
@@ -468,15 +484,19 @@ def main():
         img_key, sub_key = get_wbi_keys(sessdata)
         if img_key and sub_key:
             use_wbi = True
-            print(f"  WBI 签名密钥获取成功: img_key={img_key[:8]}..., sub_key={sub_key[:8]}...")
+            print(f"  \033[1;32mWBI 签名密钥获取成功: img_key={img_key[:8]}..., sub_key={sub_key[:8]}...\033[0m")
         else:
-            print("  WBI 签名密钥获取失败，将使用普通接口（可能受限）")
+            print("  \033[1;33mWBI 签名密钥获取失败，将使用普通接口（可能受限）\033[0m")
 
     # 逐个 UID 获取视频
     all_bvids = []
 
     for idx, uid in enumerate(uids, 1):
-        print(f"\n[{idx}/{len(uids)}] 正在获取 UID={uid} 的投稿视频...")
+        if uid in read_uids:
+            print(f"\033[33mUID={uid} 已读取，跳过...\033[0m")
+            continue
+
+        print(f"\n\033[34m[{idx}/{len(uids)}] ({(idx/len(uids)*100):.2f}%)\033[0m 正在获取 UID={uid} 的投稿视频...")
         bvids = fetch_user_videos(
             uid,
             start_ts=start_ts,
@@ -487,6 +507,17 @@ def main():
             sub_key=sub_key or "",
         )
         all_bvids.extend(bvids)
+
+        # 保存读取bvid
+        for bvid in bvids:
+            with open(DEFAULT_BVID_PATH, 'a') as ff:
+                ff.write(bvid + '\n')
+
+        # 保存已读取的UID
+        with open(DEFAULT_READ_UID_PATH, 'a') as fff:
+            fff.write(uid + '\n')
+
+
         print(f"  UID={uid} 获取到 {len(bvids)} 个 BV 号")
 
         # UID 间稍作等待（带随机抖动）
